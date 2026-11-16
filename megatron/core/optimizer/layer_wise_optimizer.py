@@ -3,9 +3,9 @@
 import logging
 import math
 import warnings
+from collections import defaultdict
 from itertools import chain
 from types import SimpleNamespace
-from collections import defaultdict
 from typing import Callable, Dict, List, Optional
 
 import torch
@@ -157,7 +157,9 @@ def _adam_flat_cost_multiplier(config: OptimizerConfig) -> int:
     return 3 * _dtype_num_bytes(torch.float32)
 
 
-def _muon_param_optimizer_state_cost(param: torch.Tensor, optimizer, config: OptimizerConfig) -> int:
+def _muon_param_optimizer_state_cost(
+    param: torch.Tensor, optimizer, config: OptimizerConfig
+) -> int:
     state_dtype = _optimizer_state_dtype(config)
     state_bytes = _dtype_num_bytes(state_dtype)
     cost = param.numel() * state_bytes  # momentum_buffer
@@ -257,6 +259,7 @@ class FlatShardedAdamFallback(Float16OptimizerWithFloat16Params):
 
     @property
     def param_groups(self) -> List[dict]:
+        """Return the public parameter groups controlled by the scheduler."""
         return self._param_groups
 
     @param_groups.setter
@@ -265,6 +268,7 @@ class FlatShardedAdamFallback(Float16OptimizerWithFloat16Params):
 
     @property
     def state(self) -> Dict[torch.nn.Parameter, dict]:
+        """Return local Adam state."""
         return self._state
 
     @state.setter
@@ -329,9 +333,8 @@ class FlatShardedAdamFallback(Float16OptimizerWithFloat16Params):
                 continue
             state = self._state[main_shard]
             if len(state) == 0:
-                if (
-                    self.config.use_precision_aware_optimizer
-                    and hasattr(self.optimizer, "initialize_state")
+                if self.config.use_precision_aware_optimizer and hasattr(
+                    self.optimizer, "initialize_state"
                 ):
                     self.optimizer.initialize_state(main_shard)
                 else:
@@ -526,6 +529,7 @@ class FlatShardedAdamFallback(Float16OptimizerWithFloat16Params):
 
     @torch.no_grad()
     def allgather_params(self) -> None:
+        """Gather updated Adam shards into the replicated model parameters."""
         for group_index, group in enumerate(self._param_groups):
             params = group["params"]
             if not params:
@@ -537,25 +541,27 @@ class FlatShardedAdamFallback(Float16OptimizerWithFloat16Params):
             sizes = [
                 sum(
                     max(0, min(r.stop, end) - max(r.start, start))
-                    for start, end, bucket_id in [
-                        self._param_index_map[p] for p in group["params"]
-                    ]
+                    for start, end, bucket_id in [self._param_index_map[p] for p in group["params"]]
                 )
                 for r in self._rank_ranges
             ]
             if not sizes or max(sizes) == 0:
                 continue
             gather_list = [
-                local_tensor
-                if rank == self.rank
-                else torch.empty(sizes[rank], device=device, dtype=dtype)
+                (
+                    local_tensor
+                    if rank == self.rank
+                    else torch.empty(sizes[rank], device=device, dtype=dtype)
+                )
                 for rank in range(self.world_size)
             ]
             torch.distributed.all_gather(gather_list, local_tensor, group=self.process_group)
             for rank, tensor in enumerate(gather_list):
                 if rank == self.rank or tensor.numel() == 0:
                     continue
-                self._copy_gathered_model_flat_to_params(group_index, self._rank_ranges[rank], tensor)
+                self._copy_gathered_model_flat_to_params(
+                    group_index, self._rank_ranges[rank], tensor
+                )
 
     def _build_local_model_flat(
         self, group_index: int, local_range: range, dtype: torch.dtype, device: torch.device
@@ -599,8 +605,7 @@ class FlatShardedAdamFallback(Float16OptimizerWithFloat16Params):
             param_world_start, param_world_end, _bucket_id = self._param_index_map[param]
             flat_local_start = max(0, param_world_start - rank_range.start)
             flat_local_end = min(
-                rank_range.stop - rank_range.start,
-                param_world_end - rank_range.start,
+                rank_range.stop - rank_range.start, param_world_end - rank_range.start
             )
             if flat_local_end <= flat_local_start:
                 continue
@@ -674,9 +679,11 @@ class FlatShardedAdamFallback(Float16OptimizerWithFloat16Params):
         if not sizes or max(sizes) == 0:
             return [torch.zeros_like(param, dtype=dtype, device=device) for param in params]
         gather_list = [
-            local_tensor
-            if rank == self.rank
-            else torch.empty(sizes[rank], device=device, dtype=dtype)
+            (
+                local_tensor
+                if rank == self.rank
+                else torch.empty(sizes[rank], device=device, dtype=dtype)
+            )
             for rank in range(self.world_size)
         ]
         torch.distributed.all_gather(gather_list, local_tensor, group=self.process_group)
@@ -727,10 +734,7 @@ class FlatShardedAdamFallback(Float16OptimizerWithFloat16Params):
                     "exp_avg_sq": exp_avg_sq,
                 }
 
-        return {
-            "optimizer": optimizer_state,
-            "fp32_from_fp16_params": fp32_from_fp16_params,
-        }
+        return {"optimizer": optimizer_state, "fp32_from_fp16_params": fp32_from_fp16_params}
 
     def load_state_dict(self, state_dict):
         if "optimizer" in state_dict and "fp32_from_fp16_params" in state_dict:
@@ -854,9 +858,7 @@ class FlatShardedAdamFallback(Float16OptimizerWithFloat16Params):
                         if exp_avg_sq_tensor is None
                         else exp_avg_sq_tensor.to(device=device, dtype=torch.float32)
                     )
-                    step_tensor = self._unwrap_checkpoint_value(
-                        param_state.get("step", saved_step)
-                    )
+                    step_tensor = self._unwrap_checkpoint_value(param_state.get("step", saved_step))
                     if step_tensor is None:
                         step_tensor = torch.tensor(0, dtype=torch.int64, device=device)
                     elif not torch.is_tensor(step_tensor):
@@ -955,13 +957,20 @@ class FlatShardedAdamFallback(Float16OptimizerWithFloat16Params):
         optim_state_to_sharding_state(
             state_dict["optimizer"],
             id_to_sharded_param_map,
-            exclude_keys=("step", "hyperball_radius"),
+            exclude_keys=(
+                "step",
+                "hyperball_radius",
+                "hyperball_partition_radii",
+                "hyperball_partition_state_version",
+                "hyperball_partition_layout_code",
+            ),
         )
         if step is not None:
             state_dict["optimizer"]["state"]["common_step"] = self._checkpoint_common_step(step)
         return state_dict
 
     def memory_assignment_summary(self, label: str) -> tuple[list[str], list[float]]:
+        """Describe the estimated memory assigned to each optimizer owner."""
         local_range = self._rank_ranges[self.rank] if self._rank_ranges else range(0, 0)
         local_cost = float(local_range.stop - local_range.start) * self.adam_cost_multiplier
         rank_costs = [
@@ -1307,7 +1316,9 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
         expert_adam_costs = [0.0 for _ in expt_dp_costs]
         flat_lines = []
         for flat_optimizer in self._flat_adam_fallback_optimizers:
-            label = "dp_cp" if flat_optimizer.process_group == self.pg_collection.dp_cp else "expt_dp"
+            label = (
+                "dp_cp" if flat_optimizer.process_group == self.pg_collection.dp_cp else "expt_dp"
+            )
             lines, rank_costs = flat_optimizer.memory_assignment_summary(label)
             flat_lines.extend(lines)
             if label == "dp_cp":
@@ -1394,7 +1405,7 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
             )
             if payload["lines"]:
                 header.extend(payload["lines"])
-        print("\n".join(header), flush=True)
+        print("\n".join(header), flush=True)  # pylint: disable=bad-builtin
 
     @staticmethod
     def _prune_optimizer_state_to_local_params(optimizer) -> None:
@@ -1403,9 +1414,7 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
             return
 
         local_param_ids = {
-            id(param)
-            for group in optimizer.param_groups
-            for param in group.get("params", [])
+            id(param) for group in optimizer.param_groups for param in group.get("params", [])
         }
         if isinstance(optimizer.state, defaultdict):
             pruned_state = defaultdict(optimizer.state.default_factory)
@@ -1579,7 +1588,9 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
         else:
             if self._flat_adam_fallback_optimizers:
                 for model_chunk in self.model_chunks:
-                    bucket_groups = model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups
+                    bucket_groups = (
+                        model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups
+                    )
                     if bucket_groups:
                         # Pre-dispatch the chain entry after optimizer step. Forward
                         # pre-hooks wait/copy it and dispatch following buckets.

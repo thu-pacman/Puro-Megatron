@@ -38,7 +38,8 @@ except ImportError:
 
 from .. import parallel_state, tensor_parallel
 from ..config_logger import has_config_logger_enabled, log_config_to_disk
-from ..dist_checkpointing.mapping import ShardedStateDict
+from ..dist_checkpointing.dict_utils import nested_values
+from ..dist_checkpointing.mapping import ShardedObject, ShardedStateDict, ShardedTensorFactory
 from ..dist_checkpointing.optimizer import (
     get_param_id_to_sharded_param_map,
     make_sharded_optimizer_tensor,
@@ -320,6 +321,37 @@ class MegatronOptimizer(ABC):
 
         Returns: optimizer sharded state dict
         """
+
+    def _scalar_state_shards(self, state_dict, id_to_sharded_param_map):
+        """Persist requested per-matrix scalar state by global model key and layer offset."""
+        keys = getattr(self.optimizer, 'checkpoint_scalar_state_keys', ())
+        shards = {}
+        if not keys:
+            return shards
+        for param_id, state in state_dict['state'].items():
+            model_param = id_to_sharded_param_map[param_id]
+            layout = model_param
+            if isinstance(layout, ShardedTensorFactory):
+                layout = next(iter(nested_values(layout.build())))
+            axes = layout.prepend_axis_num
+            shape = layout.global_shape[:axes] or (1,)
+            offset = layout.global_offset[:axes] or (0,)
+            shards[param_id] = {
+                key: ShardedObject(
+                    f'optimizer.state.{key}.{model_param.key}',
+                    (
+                        state[key].detach().cpu().clone()
+                        if torch.is_tensor(state[key])
+                        else copy.deepcopy(state[key])
+                    ),
+                    shape,
+                    offset,
+                    replica_id=model_param.replica_id,
+                )
+                for key in keys
+                if key in state
+            }
+        return shards
 
     @staticmethod
     def _extract_common_per_param_step(state_dict) -> Union[int, torch.Tensor, None]:
@@ -848,16 +880,27 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
         ]
 
         step = self._extract_common_per_param_step(state_dict['optimizer'])
+        scalar_shards = self._scalar_state_shards(state_dict['optimizer'], id_to_sharded_param_map)
 
         # Convert regular optimizer state
         # all optimizer parameters passed to optim_state_to_sharding_state are
         # expected to have the same shape as the model parameters,
         # so we save the step separately and ignore it here
         optim_state_to_sharding_state(
-            state_dict['optimizer'], id_to_sharded_param_map, exclude_keys="step"
+            state_dict['optimizer'],
+            id_to_sharded_param_map,
+            exclude_keys=(
+                "step",
+                "hyperball_radius",
+                "hyperball_partition_radii",
+                "hyperball_partition_state_version",
+                "hyperball_partition_layout_code",
+            ),
         )
         # save step as a shared step among all parameters. Separate per-parameter
         # steps are not supported
+        for param_id, fields in scalar_shards.items():
+            state_dict['optimizer']['state'][param_id].update(fields)
         if step:
             state_dict['optimizer']['state']['common_step'] = self._checkpoint_common_step(step)
         return state_dict
@@ -1039,13 +1082,26 @@ class FP32Optimizer(MegatronOptimizer):
             model_sharded_state_dict, self.get_parameters()
         )
         step = self._extract_common_per_param_step(state_dict)
+        scalar_shards = self._scalar_state_shards(state_dict, id_to_sharded_param_map)
 
         # all optimizer parameters passed to optim_state_to_sharding_state are
         # expected to have the same shape as the model parameters,
         # so we save the step separately and ignore it here
-        optim_state_to_sharding_state(state_dict, id_to_sharded_param_map, exclude_keys="step")
+        optim_state_to_sharding_state(
+            state_dict,
+            id_to_sharded_param_map,
+            exclude_keys=(
+                "step",
+                "hyperball_radius",
+                "hyperball_partition_radii",
+                "hyperball_partition_state_version",
+                "hyperball_partition_layout_code",
+            ),
+        )
         # save step as a shared step among all parameters. Separate per-parameter
         # steps are not supported
+        for param_id, fields in scalar_shards.items():
+            state_dict['state'][param_id].update(fields)
         if step:
             state_dict['state']['common_step'] = self._checkpoint_common_step(step)
         return state_dict

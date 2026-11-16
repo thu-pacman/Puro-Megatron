@@ -135,6 +135,41 @@ def _should_strip_te_extra_state_on_load(args) -> bool:
     return getattr(args, "fp8", None) is not None and getattr(args, "fp8_recipe", None) == "blockwise"
 
 
+def _is_te_runtime_state_key(module, key: str) -> bool:
+    """Identify extra state owned by a TE module, not arbitrary custom metadata."""
+    owner_name, _, field = key.rpartition('.')
+    if not field.startswith('_extra_state') or not (
+        field == '_extra_state' or field[len('_extra_state'):].isdigit()
+    ):
+        return False
+    try:
+        owner = module.get_submodule(owner_name) if owner_name else module
+    except AttributeError:
+        return False
+    return any(base.__module__.startswith('transformer_engine.') for base in type(owner).__mro__)
+
+
+def _load_model_state_without_te_runtime(module, state_dict, strict: bool):
+    """Reset stateless blockwise FP8 metadata while keeping weights strict.
+
+    PyTorch still expects TE's _extra_state keys after we strip their runtime
+    contents. Only those keys may be missing; model/feedback parameters and
+    non-TE extra state must retain the normal strict-load checks.
+    """
+    for key in list(state_dict):
+        if _is_te_runtime_state_key(module, key):
+            del state_dict[key]
+    result = module.load_state_dict(state_dict, strict=False)
+    if strict:
+        missing = [key for key in result.missing_keys if not _is_te_runtime_state_key(module, key)]
+        if missing or result.unexpected_keys:
+            raise RuntimeError(
+                f'Invalid model state after resetting blockwise TE metadata: '
+                f'missing={missing}, unexpected={result.unexpected_keys}'
+            )
+    return result
+
+
 def check_checkpoint_args(checkpoint_args):
     """Ensure fixed arguments for a model are the same for the input
     arguments and the one retrieved from checkpoint."""
@@ -158,6 +193,9 @@ def check_checkpoint_args(checkpoint_args):
     _compare('num_layers')
     _compare('hidden_size')
     _compare('num_attention_heads')
+    from megatron.core.models.gpt.latent_feedback import check_feedback_checkpoint_args
+
+    check_feedback_checkpoint_args(args, checkpoint_args)
     _compare('add_position_embedding', default=True)
     if args.vocab_file:
         _compare('max_position_embeddings')
@@ -380,7 +418,7 @@ def get_rng_state(ckpt_format: str, tp_group: torch.distributed.ProcessGroup, pp
         'rng_tracker_states': tensor_parallel.get_cuda_rng_tracker().get_states()}
 
     rng_state_list = None
-    if args.data_parallel_random_init and torch.distributed.is_initialized() and \
+    if (args.data_parallel_random_init or getattr(args, "full_bandwidth", False)) and torch.distributed.is_initialized() and \
             mpu.get_data_parallel_world_size() > 1:
         rng_state_list = \
             [None for i in range(mpu.get_data_parallel_world_size())]
@@ -1801,21 +1839,15 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, load_arg='load', 
     else:
         print_rank_0('could not find arguments in the checkpoint ...')
 
-    removed_te_extra_state = _strip_te_extra_state_from_checkpoint_if_requested(
-        state_dict, _should_strip_te_extra_state_on_load(args)
-    )
-    if removed_te_extra_state > 0:
-        print_rank_0(
-            "Ignoring Transformer Engine FP8 _extra_state entries from checkpoint "
-            "because FP8 blockwise recipe is enabled on load "
-            f"(removed {removed_te_extra_state} entries)."
-        )
-
     def load_model_state_dict(module, state_dict, strict: bool):
         """Helper function to load state dict with fallback for missing extra states."""
+        if _should_strip_te_extra_state_on_load(args):
+            return _load_model_state_without_te_runtime(module, state_dict, strict)
         try:
             return module.load_state_dict(state_dict, strict=strict)
         except Exception as e:
+            if getattr(args, "full_bandwidth", False):
+                raise
             if not strict:
                 raise
             load_return = module.load_state_dict(state_dict, strict=False)
@@ -1960,7 +1992,11 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, load_arg='load', 
                     rng_state = state_dict['rng_state']
 
                 # access rng_state for data parallel rank
-                if args.data_parallel_random_init:
+                if getattr(args, 'full_bandwidth', False):
+                    if len(rng_state) != mpu.get_data_parallel_world_size():
+                        raise RuntimeError('Feedback resume requires one saved RNG state per DP rank')
+                    rng_state = rng_state[mpu.get_data_parallel_rank()]
+                elif args.data_parallel_random_init:
                     rng_state = rng_state[mpu.get_data_parallel_rank()]
                 else:
                     rng_state = rng_state[0]

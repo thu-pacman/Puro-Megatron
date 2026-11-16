@@ -486,8 +486,11 @@ def finalize_model_grads(
         # the number of tokens is only present on the last stage, so broadcast it
         # to the other ranks in the pipeline parallel group.
         assert not isinstance(pp_group, list)
-        last_rank = get_pp_last_rank(pp_group)
-        torch.distributed.broadcast(num_tokens, src=last_rank, group=pp_group)
+        # A singleton PP group already holds the count. Avoid lazily allocating
+        # another NCCL communicator (and its device buffers) for this no-op.
+        if torch.distributed.get_world_size(pp_group) > 1:
+            last_rank = get_pp_last_rank(pp_group)
+            torch.distributed.broadcast(num_tokens, src=last_rank, group=pp_group)
 
         # all-reduce across DP ranks.
         torch.distributed.all_reduce(num_tokens, group=dp_cp_group)

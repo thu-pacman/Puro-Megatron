@@ -572,6 +572,8 @@ def _get_megatron_emerging_optimizer(
             if not param.requires_grad:
                 continue
             param.param_name = name
+            if "latent_feedback." in name:
+                param.is_feedback_parameter = True
             if 'experts' in name and 'shared' not in name:
                 param.expert_tp = True
             # TODO(deyuf): support MLA

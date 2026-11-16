@@ -511,4 +511,4 @@ class Float16Module(MegatronModule):
     def load_state_dict(
         self, state_dict, strict=True
     ):  # pylint: disable=missing-function-docstring
-        self.module.load_state_dict(state_dict, strict=strict)
+        return self.module.load_state_dict(state_dict, strict=strict)

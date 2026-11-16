@@ -467,6 +467,10 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
         # reused across layers like MTP logits. So, to prevent in-place modification
         # checks we save the tensor in ctx.
         ctx.main_grad = main_grad
+        # Saved-tensor hooks (including non-reentrant activation checkpointing)
+        # may unpack a plain Tensor without the Parameter's DDP attributes.
+        # Keep the owner for fused-gradient readiness bookkeeping.
+        ctx.weight_owner = weight if gradient_accumulation_fusion else None
         ctx.use_bias = bias is not None
         ctx.gradient_accumulation_fusion = gradient_accumulation_fusion
         ctx.allreduce_dgrad = allreduce_dgrad
@@ -578,12 +582,13 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
                             "Unsupported gradient type for gradient accumulation fusion"
                         )
 
-            if hasattr(weight, "grad_added_to_main_grad"):
+            weight_owner = ctx.weight_owner
+            if hasattr(weight_owner, "grad_added_to_main_grad"):
                 # When overlap_grad_reduce is True, need to ensure that backward hooks
                 # are all run on the main backprop thread to prevent deadlocks. Setup
                 # dummy grad_weight tensor to prevent backward hooks from being run
                 # in a background thread.
-                if getattr(weight, "zero_out_wgrad", False):
+                if getattr(weight_owner, "zero_out_wgrad", False):
                     if HAVE_TE:
                         # get_dummy_wgrad function in TE enables reuse of single dummy wgrad buffer
                         # across different layers/microbatches. The function accepts shape as list.
@@ -607,7 +612,7 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
                             device=torch.cuda.current_device(),
                             requires_grad=False,
                         )
-                weight.grad_added_to_main_grad = True
+                weight_owner.grad_added_to_main_grad = True
             else:
                 grad_weight = None
         else:

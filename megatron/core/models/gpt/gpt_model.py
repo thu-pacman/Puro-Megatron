@@ -5,11 +5,13 @@ from typing import Dict, Literal, Optional
 
 import torch
 from torch import Tensor
+from torch.utils.checkpoint import checkpoint
 
 from megatron.core import parallel_state, tensor_parallel
 from megatron.core.config_logger import has_config_logger_enabled, log_config_to_disk
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.inference.contexts import BaseInferenceContext
+from megatron.core.models.common.chunked_output import chunked_output_loss
 from megatron.core.models.common.embeddings import YarnRotaryEmbedding
 from megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
 from megatron.core.models.common.embeddings.rotary_pos_embedding import (
@@ -17,6 +19,7 @@ from megatron.core.models.common.embeddings.rotary_pos_embedding import (
     RotaryEmbedding,
 )
 from megatron.core.models.common.language_module.language_module import LanguageModule
+from megatron.core.models.gpt.latent_feedback import LatentFeedbackFusion
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
     FineGrainedActivationOffloadingInterface as off_interface,
@@ -256,6 +259,12 @@ class GPTModel(LanguageModule):
         if self.pre_process or self.post_process or self.mtp_process:
             self.setup_embeddings_and_output_layer()
 
+        if config.full_bandwidth:
+            if not self.pre_process or not self.post_process:
+                raise ValueError("Latent feedback requires a complete GPT on each DP rank")
+            self.latent_feedback = LatentFeedbackFusion(config)
+        self.feedback_losses = ()
+
         if has_config_logger_enabled(self.config):
             log_config_to_disk(
                 self.config, self.state_dict(), prefix=f'{type(self).__name__}_init_ckpt'
@@ -482,6 +491,73 @@ class GPTModel(LanguageModule):
         inference_params: Optional[BaseInferenceContext] = None,
         loss_mask: Optional[Tensor] = None,
         padding_mask: Optional[Tensor] = None,
+        feedback_passes: Optional[int] = None,
+        return_hidden_states: bool = False,
+    ):
+        """Run the ordinary path or two shared-weight passes with a mean NLL."""
+        inference_context = deprecate_inference_params(inference_context, inference_params)
+        single_kwargs = dict(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+            decoder_input=decoder_input,
+            labels=labels,
+            inference_context=inference_context,
+            packed_seq_params=packed_seq_params,
+            extra_block_kwargs=extra_block_kwargs,
+            runtime_gather_output=runtime_gather_output,
+            loss_mask=loss_mask,
+            padding_mask=padding_mask,
+        )
+        self.feedback_losses = ()
+        if not self.config.full_bandwidth:
+            if feedback_passes not in (None, 1):
+                raise ValueError("Multiple feedback passes require full_bandwidth")
+            return self._forward_single(**single_kwargs, return_hidden_states=return_hidden_states)
+        passes = feedback_passes
+        if passes is None:
+            passes = self.config.feedback_passes if labels is not None else 1
+        if passes not in (1, 2) or (self.training and passes != 2):
+            raise ValueError("Feedback training requires fixed K=2; evaluation supports K=1 or 2")
+        if inference_context is not None and (self.training or labels is not None or passes != 1):
+            raise ValueError("Two-pass feedback requires cache-free execution")
+        embeddings = decoder_input
+        if embeddings is None:
+            embeddings = self.embedding(input_ids=input_ids, position_ids=position_ids)
+        single_kwargs["decoder_input"] = embeddings
+        output, hidden = self._forward_single(**single_kwargs, return_hidden_states=True)
+        pass_losses = [output.detach()] if labels is not None else []
+        if passes == 2:
+            single_kwargs["decoder_input"] = self.latent_feedback.feedback_sequence(
+                hidden, embeddings, packed_seq_params
+            )
+            next_output, hidden = self._forward_single(**single_kwargs, return_hidden_states=True)
+            if labels is None:
+                output = next_output
+            else:
+                pass_losses.append(next_output.detach())
+                output = output + next_output
+        if labels is not None:
+            output = output / passes
+        self.feedback_losses = tuple(pass_losses)
+        return (output, hidden) if return_hidden_states else output
+
+    def _forward_single(
+        self,
+        input_ids: Tensor,
+        position_ids: Tensor,
+        attention_mask: Tensor,
+        decoder_input: Tensor = None,
+        labels: Tensor = None,
+        inference_context: BaseInferenceContext = None,
+        packed_seq_params: PackedSeqParams = None,
+        extra_block_kwargs: dict = None,
+        runtime_gather_output: Optional[bool] = None,
+        *,
+        inference_params: Optional[BaseInferenceContext] = None,
+        loss_mask: Optional[Tensor] = None,
+        padding_mask: Optional[Tensor] = None,
+        return_hidden_states: bool = False,
     ) -> Tensor:
         """Forward function of the GPT Model This function passes the input tensors
         through the embedding layer, and then the decoder and finally into the post
@@ -522,8 +598,7 @@ class GPTModel(LanguageModule):
         rotary_pos_cos_sin = preproc_output[6] if len(preproc_output) == 7 else None
 
         # Run decoder.
-        hidden_states = self.decoder(
-            hidden_states=decoder_input,
+        decoder_kwargs = dict(
             attention_mask=attention_mask,
             inference_context=inference_context,
             rotary_pos_emb=rotary_pos_emb,
@@ -535,8 +610,9 @@ class GPTModel(LanguageModule):
             padding_mask=padding_mask,
             **(extra_block_kwargs or {}),
         )
+        hidden_states = self.decoder(hidden_states=decoder_input, **decoder_kwargs)
 
-        return self._postprocess(
+        postprocess_kwargs = dict(
             hidden_states=hidden_states,
             input_ids=input_ids,
             position_ids=position_ids,
@@ -555,6 +631,18 @@ class GPTModel(LanguageModule):
             extra_block_kwargs=extra_block_kwargs,
             inference_context=inference_context,
         )
+        if (
+            self.config.full_bandwidth
+            and self.training
+            and labels is not None
+            and self.config.recompute_granularity == "full"
+            and not self.config.output_loss_chunk_size
+        ):
+            output = checkpoint(self._postprocess, use_reentrant=False, **postprocess_kwargs)
+        else:
+            output = self._postprocess(**postprocess_kwargs)
+
+        return (output, hidden_states) if return_hidden_states else output
 
     def _postprocess(
         self,
@@ -681,6 +769,17 @@ class GPTModel(LanguageModule):
                 hidden_states = inference_context.last_token_logits(
                     hidden_states.squeeze(1).unsqueeze(0)
                 ).unsqueeze(1)
+
+        if labels is not None and self.config.output_loss_chunk_size:
+            return chunked_output_loss(
+                hidden_states,
+                labels,
+                self.output_layer,
+                self.compute_language_model_loss,
+                self.config.output_loss_chunk_size,
+                weight=output_weight,
+                runtime_gather_output=runtime_gather_output,
+            )
 
         logits, _ = self.output_layer(
             hidden_states, weight=output_weight, runtime_gather_output=runtime_gather_output

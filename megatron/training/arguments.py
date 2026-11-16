@@ -2282,6 +2282,8 @@ def _add_checkpointing_args(parser):
     ckpt_factory = ArgumentGroupFactory(CheckpointConfig, exclude=["most_recent_k", "save_tokenizer_assets", "save_optim", "save_rng", "load_optim", "load_rng"])
     group = ckpt_factory.build_group(parser, "checkpointing")
 
+    group.add_argument('--init-from-hf', type=str, default=None,
+                       help='Weight-only initialization from a dense Qwen3 safetensors directory.')
     group.add_argument('--no-save-optim', action='store_true', default=None,
                        help='Do not save current optimizer.')
     group.add_argument('--no-save-rng', action='store_true', default=None,

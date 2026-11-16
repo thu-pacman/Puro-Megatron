@@ -40,7 +40,23 @@ public commit messages.
 | `fix(optimizer): normalize fused matrices by logical projection` | `149a1d1f7` | Separate QKV/SwiGLU normalization and Newton-Schulz modes |
 | release-only test alignment commit | release-only | Align stale FLOPs formatting tests; no formula change |
 
-## Deliberately excluded
+## Full-bandwidth feedback extension
+
+The feedback extension is curated onto `puro-2b` commit
+`a7b80e873a0b5e1820ae425b9abd1b9ec578dc5c`. Its training reference is the
+frozen Dolma3 fixed-K2 mean-loss implementation from main repository commit
+`60ae815114dd49135528c69e34e107867c97f87d` and scripts commit
+`5b31e7d701212f62305582a95ec8a9b0b5dc7ad1`.
+
+The selected code includes causal full-layer feedback, mean K1/K2 NLL,
+chunked checkpointed output loss, strict HF initialization, persistent
+MuonHyperball partition radii, and shared-parameter DDP/checkpoint fixes.
+Source files are adapted to the existing public interfaces; unrelated
+research modes and cluster launch paths remain excluded. See
+[Full-bandwidth feedback](full-bandwidth-feedback.md) for the supported
+configuration and migration checks.
+
+## Deliberately excluded from the base release
 
 - `numeric_efflr_wd_experiment`: two-stage and numeric WD sweeps, instant
   checkpoint plans, TE runtime monkey patches, and experimental logging.

@@ -19,7 +19,8 @@ The public diff keeps the training capabilities used by [Puro](https://huggingfa
 - a structured startup theoretical FLOPs report.
 
 The source commits and scope decisions are recorded in
-[Origin commits](docs/ORIGIN_COMMITS.md). See
+[Origin commits](docs/ORIGIN_COMMITS.md). The fixed two-pass continuation
+implementation is described in [Full-bandwidth feedback](docs/full-bandwidth-feedback.md). See
 [Puro-Megatron extensions](docs/puro-megatron.md) for the supported interfaces
 and [`examples/puro/run_puro_2b.sh`](examples/puro/run_puro_2b.sh) for the
 launcher-neutral Puro-2B recipes.

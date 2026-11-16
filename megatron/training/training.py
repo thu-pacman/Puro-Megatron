@@ -222,6 +222,17 @@ def print_datetime(string, override_timestamp=None):
     print_rank_0(f'[{string}] datetime: {time_str} ')
 
 def num_floating_point_operations(args, batch_size):
+    """Estimate model FLOPs, excluding activation recomputation and elementwise ops."""
+    single_pass = _num_single_pass_floating_point_operations(args, batch_size)
+    if not getattr(args, 'full_bandwidth', False):
+        return single_pass
+    # Both passes include the head/loss. The feedback has two H-by-H projections.
+    feedback = 12 * batch_size * args.seq_length * args.hidden_size**2
+    return 2 * single_pass + feedback
+
+
+
+def _num_single_pass_floating_point_operations(args, batch_size):
     def calculate_layer_counts():
         """Calculate the number of attention, Mamba, and MLP layers."""
         if args.hybrid_override_pattern:

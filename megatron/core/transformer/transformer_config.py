@@ -42,6 +42,24 @@ class TransformerConfig(ModelParallelConfig):
     # model architecture
     ####################
 
+    full_bandwidth: bool = False
+    """Enable fixed-K2, shared-weight, full-decoder feedback with a mean NLL."""
+
+    feedback_passes: int = 2
+    """Number of passes during feedback training (fixed at two)."""
+
+    feedback_fusion: str = "residual_glu"
+    """Feedback fusion; this release supports identity-initialized Residual-GLU."""
+
+    feedback_loss_reduction: str = "mean"
+    """Training objective; this release averages the two token NLLs."""
+
+    experimental_feedback_fp8: bool = False
+    """Enable blockwise FP8 decoder computation with BF16 parameter storage."""
+
+    output_loss_chunk_size: int = 0
+    """Checkpoint output projection/loss in token chunks; zero disables chunking."""
+
     num_layers: int = field(default=0, metadata={"argparse_meta": {"default": None}})
     """Number of transformer layers in a transformer block."""
 
@@ -912,6 +930,54 @@ class TransformerConfig(ModelParallelConfig):
         details.
         """
         super().__post_init__()
+        if self.output_loss_chunk_size < 0:
+            raise ValueError("output_loss_chunk_size must be nonnegative")
+        if self.output_loss_chunk_size and (
+            self.tensor_model_parallel_size != 1
+            or self.context_parallel_size != 1
+            or self.sequence_parallel
+            or self.mtp_num_layers
+        ):
+            raise ValueError(
+                "Chunked output loss requires TP=CP=1 without sequence parallelism or MTP"
+            )
+        if self.experimental_feedback_fp8:
+            if not self.full_bandwidth or not self.fp8 or self.fp8_recipe != Fp8Recipe.blockwise:
+                raise ValueError("Feedback FP8 requires full_bandwidth and blockwise FP8")
+            if not self.bf16 or self.fp8_param:
+                raise ValueError("Feedback FP8 requires BF16 parameter storage")
+        if self.full_bandwidth:
+            if self.feedback_passes != 2 or self.feedback_fusion != "residual_glu":
+                raise ValueError("Full-bandwidth feedback requires fixed K=2 and residual_glu")
+            if self.feedback_loss_reduction != "mean":
+                raise ValueError("Full-bandwidth feedback requires the mean K1/K2 loss")
+            if (
+                self.tensor_model_parallel_size != 1
+                or self.pipeline_model_parallel_size != 1
+                or self.context_parallel_size != 1
+                or self.sequence_parallel
+                or self.virtual_pipeline_model_parallel_size is not None
+            ):
+                raise ValueError("Full-bandwidth feedback supports DP only, TP=PP=CP=1")
+            if (
+                self.mtp_num_layers
+                or self.num_moe_experts
+                or self.fp4
+                or self.fp16
+                or (self.fp8 and not self.experimental_feedback_fp8)
+                or self.params_dtype not in (torch.float32, torch.bfloat16)
+                or self.cpu_offloading
+                or self.fine_grained_activation_offloading
+                or self.cuda_graph_impl != "none"
+                or self.enable_cuda_graph
+                or self.external_cuda_graph
+            ):
+                raise ValueError(
+                    "Full-bandwidth feedback requires eager dense BF16/FP32 or opted-in FP8"
+                )
+            # A shared TE parameter is visited twice per microbatch.
+            self.disable_parameter_transpose_cache = True
+
         if self.fp16 and self.bf16:
             raise ValueError(
                 f"Only one of self.fp16: {self.fp16} and self.bf16 {self.bf16} should be True."

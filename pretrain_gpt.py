@@ -162,10 +162,22 @@ def loss_func(
     else:
         losses = output_tensor.view(-1).float()
         loss_mask = loss_mask.view(-1).float()
+        pass_losses = ()
+        if model is not None and getattr(args, 'full_bandwidth', False):
+            pass_losses = get_attr_wrapped_model(model, 'feedback_losses')
         loss = torch.sum(losses * loss_mask)
 
         num_tokens = loss_mask.sum().clone().detach().to(torch.int)
         report = {'lm loss': torch.cat([loss.clone().detach().view(1), num_tokens.view(1)])}
+        if pass_losses:
+            report['fbt objective'] = report['lm loss']
+            for pass_index, pass_loss in enumerate(pass_losses, start=1):
+                masked_pass_loss = (pass_loss.reshape(-1).float() * loss_mask).sum()
+                report[f'feedback loss/pass{pass_index}'] = torch.cat(
+                    [masked_pass_loss.detach().view(1), num_tokens.view(1)]
+                )
+            # Preserve the frozen run's public K1 metric; name the optimized mean explicitly.
+            report['lm loss'] = report['feedback loss/pass1']
 
     # Check individual rank losses are not NaN prior to DP all-reduce.
     rerun_state_machine = get_rerun_state_machine()

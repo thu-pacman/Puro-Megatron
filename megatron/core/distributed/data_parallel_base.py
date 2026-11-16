@@ -93,4 +93,4 @@ class _BaseDataParallel(MegatronModule):
         descendants. If strict is True, then the keys of state_dict must exactly match
         the keys returned by this module’s state_dict() function.
         """
-        self.module.load_state_dict(state_dict, strict=strict)
+        return self.module.load_state_dict(state_dict, strict=strict)

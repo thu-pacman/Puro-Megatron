@@ -111,6 +111,14 @@ def gpt_builder(args, pre_process, post_process, vp_stage=None, config=None, pg_
             pg_collection=pg_collection,
         )
 
+    if getattr(args, "init_from_hf", None):
+        if args.load or args.pretrained_checkpoint:
+            raise ValueError("init-from-hf cannot be combined with a native checkpoint load")
+        from megatron.core.models.gpt.hf_checkpoint import load_qwen3_safetensors
+
+        conversion = load_qwen3_safetensors(model, args.init_from_hf, rotary_base=args.rotary_base)
+        print_rank_0(f"HF weight-only initialization: {conversion}")
+
     return model
 
 
