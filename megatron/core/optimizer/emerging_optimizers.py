@@ -751,6 +751,8 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
 class TensorParallelMuonHyperball(_TensorParallelHyperballMixin, TensorParallelMuon):
     """Tensor-parallel Muon with Hyperball-style norm-preserving matrix updates."""
 
+    diagnostic_family = "hyperball"
+
     checkpoint_scalar_state_keys = (
         "hyperball_radius",
         "hyperball_partition_radii",
@@ -896,9 +898,9 @@ class TensorParallelMuonHyperball(_TensorParallelHyperballMixin, TensorParallelM
                 tag = "matrix"
         p.hyperball_module_tag = tag
 
-    def set_diagnostic_context(self, iteration: int, diag_interval: int) -> None:
+    def set_diagnostic_context(self, iteration: int, interval: int) -> None:
         """Enable optimizer-local diagnostics for the next step when on a diag interval."""
-        self._hyperball_diag_enabled = diag_interval > 0 and iteration % diag_interval == 0
+        self._hyperball_diag_enabled = interval > 0 and iteration % interval == 0
         if self._hyperball_diag_enabled:
             self._hyperball_diag_stats = {}
             self._hyperball_refresh_lr_map()

@@ -157,10 +157,7 @@ def test_muon_hyperball_optimizer_preserves_norm():
 
     assert not torch.equal(model.weight.data, original_weight)
     assert torch.allclose(
-        model.weight.data.norm(),
-        torch.tensor(original_norm, device='cuda'),
-        atol=1e-5,
-        rtol=1e-5,
+        model.weight.data.norm(), torch.tensor(original_norm, device='cuda'), atol=1e-5, rtol=1e-5
     )
 
     state_dict = optimizer.state_dict()
@@ -209,28 +206,18 @@ def test_muon_strict_effective_lr_matches_normalized_weight_distance_on_cpu():
         strict_effective_lr=True,
         pg_collection=None,
     )
-    update = torch.tensor(
-        [[1.0, -2.0, 3.0, -4.0]] * 4,
-        dtype=torch.float32,
-    )
-    scale = optimizer._get_strict_effective_lr_scale(
-        param, update, base_lr=0.1, weight_decay=0.1
-    )
+    update = torch.tensor([[1.0, -2.0, 3.0, -4.0]] * 4, dtype=torch.float32)
+    scale = optimizer._get_strict_effective_lr_scale(param, update, base_lr=0.1, weight_decay=0.1)
     actual_lr = 0.1 * float(scale.item())
     before = param.detach().float()
     after = before * (1.0 - actual_lr * 0.1) - 0.1 * update * scale
-    chord = (
-        after / after.norm() - before / before.norm()
-    ).norm().item()
+    chord = (after / after.norm() - before / before.norm()).norm().item()
     assert chord == pytest.approx(0.3, rel=1e-5, abs=1e-6)
 
 
 def test_muon_effective_lr_mult_requires_plain_muon():
     with pytest.raises(AssertionError, match="requires optimizer='muon'"):
-        OptimizerConfig(
-            optimizer='muon_hyperball',
-            muon_effective_lr_mult=2.0,
-        )
+        OptimizerConfig(optimizer='muon_hyperball', muon_effective_lr_mult=2.0)
 
 
 def test_muon_hyperball_lr_mult_sets_preprojection_relative_update_on_cpu():
@@ -274,29 +261,17 @@ def test_muon_hyperball_routes_only_selected_matrices():
     embedding.is_embedding_or_output_parameter = True
     router = torch.nn.Parameter(torch.ones(4, 4))
 
-    assert merged_override(matrix, "decoder.layers.0.mlp.linear_fc1.weight") == {
-        'wd_mult': 0.0
-    }
-    assert merged_override(norm, "decoder.layers.0.input_layernorm.weight") == {
-        'optimizer': 'adam'
-    }
-    assert merged_override(embedding, "embedding.word_embeddings.weight") == {
-        'optimizer': 'adam'
-    }
-    assert merged_override(router, "decoder.layers.0.mlp.router.weight") == {
-        'optimizer': 'adam'
-    }
+    assert merged_override(matrix, "decoder.layers.0.mlp.linear_fc1.weight") == {'wd_mult': 0.0}
+    assert merged_override(norm, "decoder.layers.0.input_layernorm.weight") == {'optimizer': 'adam'}
+    assert merged_override(embedding, "embedding.word_embeddings.weight") == {'optimizer': 'adam'}
+    assert merged_override(router, "decoder.layers.0.mlp.router.weight") == {'optimizer': 'adam'}
 
 
 def test_muon_hyperball_rejects_zero_norm_parameter():
     param = torch.nn.Parameter(torch.zeros(4, 4))
     with pytest.raises(ValueError, match="non-zero norm"):
         TensorParallelMuonHyperball(
-            params=[param],
-            lr=0.1,
-            weight_decay=0.0,
-            num_ns_steps=1,
-            pg_collection=None,
+            params=[param], lr=0.1, weight_decay=0.0, num_ns_steps=1, pg_collection=None
         )
 
 
@@ -314,26 +289,18 @@ def test_muon_hyperball_fixed_rms_sets_frobenius_radius():
 
     expected_radius = 0.25 * math.sqrt(param.numel())
     assert param.detach().norm().item() == pytest.approx(expected_radius)
-    assert optimizer._get_or_init_hyperball_radius(param).item() == pytest.approx(
-        expected_radius
-    )
+    assert optimizer._ensure_hyperball_radius_state(param).item() == pytest.approx(expected_radius)
 
 
 def test_muon_hyperball_fixed_radius_and_rms_are_mutually_exclusive():
     with pytest.raises(AssertionError, match="mutually exclusive"):
         OptimizerConfig(
-            optimizer='muon_hyperball',
-            muon_hyperball_radius=1.0,
-            muon_hyperball_rms=0.25,
+            optimizer='muon_hyperball', muon_hyperball_radius=1.0, muon_hyperball_rms=0.25
         )
 
     param = torch.nn.Parameter(torch.ones(4, 4))
     with pytest.raises(ValueError, match="mutually exclusive"):
-        TensorParallelMuonHyperball(
-            params=[param],
-            hyperball_radius=1.0,
-            hyperball_rms=0.25,
-        )
+        TensorParallelMuonHyperball(params=[param], hyperball_radius=1.0, hyperball_rms=0.25)
 
 
 def _is_test_swiglu_fc1(param):
@@ -371,9 +338,7 @@ def test_muon_qkv_partition_layout_round_trip():
     assert matrices[0][:, 0].tolist() == [0.0, 3.0, 12.0, 15.0]
     assert matrices[1][:, 0].tolist() == [6.0, 18.0]
     assert matrices[2][:, 0].tolist() == [9.0, 21.0]
-    assert torch.equal(
-        optimizer._merge_matrix_partitions(param, matrices, param.shape), param
-    )
+    assert torch.equal(optimizer._merge_matrix_partitions(param, matrices, param.shape), param)
 
 
 @pytest.mark.parametrize(
@@ -418,9 +383,7 @@ def test_muon_partition_modes_configure_swiglu_predicate():
         use_cpu_initialization=True,
     )
     config = OptimizerConfig(
-        optimizer="muon_hyperball",
-        muon_swiglu_ns_mode="separate",
-        muon_swiglu_norm_mode="separate",
+        optimizer="muon_hyperball", muon_swiglu_ns_mode="separate", muon_swiglu_norm_mode="separate"
     )
     kwargs = _muon_config_to_kwargs(
         config, [SimpleNamespace(config=model_config)], pg_collection=None
@@ -437,9 +400,7 @@ def test_muon_partition_modes_configure_swiglu_predicate():
 
 
 def test_muon_separate_swiglu_norm_scales_effective_lr_per_projection():
-    param = torch.nn.Parameter(
-        torch.cat((torch.full((4, 3), 2.0), torch.full((4, 3), 4.0)))
-    )
+    param = torch.nn.Parameter(torch.cat((torch.full((4, 3), 2.0), torch.full((4, 3), 4.0))))
     param.is_test_swiglu_fc1 = True
     optimizer = _make_partitioned_cpu_muon(
         param,
@@ -459,10 +420,8 @@ def test_muon_separate_swiglu_norm_scales_effective_lr_per_projection():
     assert up_update.square().mean().sqrt().item() == pytest.approx(12.0)
 
 
-def test_muon_hyperball_separate_norm_preserves_swiglu_radii_without_state():
-    param = torch.nn.Parameter(
-        torch.cat((torch.full((4, 3), 1.0), torch.full((4, 3), 3.0)))
-    )
+def test_muon_hyperball_separate_norm_preserves_and_saves_swiglu_radii():
+    param = torch.nn.Parameter(torch.cat((torch.full((4, 3), 1.0), torch.full((4, 3), 3.0))))
     param.is_test_swiglu_fc1 = True
     optimizer = TensorParallelMuonHyperball(
         [param],
@@ -479,29 +438,21 @@ def test_muon_hyperball_separate_norm_preserves_swiglu_radii_without_state():
         hyperball_eps=1e-12,
         pg_collection=None,
     )
-    initial_norms = torch.stack(
-        [part.norm() for part in torch.chunk(param.detach(), 2, dim=0)]
-    )
+    initial_norms = torch.stack([part.norm() for part in torch.chunk(param.detach(), 2, dim=0)])
     update = torch.cat((torch.ones((4, 3)), torch.full((4, 3), 5.0)))
 
     with torch.no_grad():
         optimizer.pre_weight_update_fn_inplace(param, update)
-        update_norms = torch.stack(
-            [part.norm() for part in torch.chunk(update.detach(), 2, dim=0)]
-        )
+        update_norms = torch.stack([part.norm() for part in torch.chunk(update.detach(), 2, dim=0)])
         param.add_(update, alpha=-0.1)
         optimizer.post_weight_update_fn_inplace(param)
 
-    final_norms = torch.stack(
-        [part.norm() for part in torch.chunk(param.detach(), 2, dim=0)]
-    )
+    final_norms = torch.stack([part.norm() for part in torch.chunk(param.detach(), 2, dim=0)])
     assert torch.allclose(update_norms, initial_norms)
     assert torch.allclose(final_norms, initial_norms)
-    assert all(
-        "hyperball" not in key
-        for state in optimizer.state_dict()["state"].values()
-        for key in state
-    )
+    state = optimizer.state_dict()["state"][0]
+    torch.testing.assert_close(state["hyperball_partition_radii"], initial_norms)
+    assert state["hyperball_partition_state_version"] == 1
 
 
 def test_muon_hyperball_separate_rms_targets_each_qkv_projection():
@@ -528,13 +479,13 @@ def test_muon_hyperball_separate_rms_targets_each_qkv_projection():
     for _, part in optimizer._matrix_partition_parts(param, param):
         assert part.float().square().mean().sqrt().item() == pytest.approx(0.5)
     assert torch.allclose(
-        optimizer._get_or_init_partition_hyperball_radii(param),
+        optimizer._ensure_partition_hyperball_radius_state(param),
         torch.tensor([0.5 * math.sqrt(12), 0.5 * math.sqrt(6), 0.5 * math.sqrt(6)]),
     )
 
 
 def test_muon_hyperball_sharded_state_dict_smoke():
-    """MuonHyperball should support torch_dist optimizer sharding without scalar state."""
+    """MuonHyperball should shard tensor state and persistent radius metadata."""
     Utils.initialize_model_parallel()
     try:
         model = torch.nn.Linear(64, 64, bias=False, dtype=torch.bfloat16, device='cuda')
