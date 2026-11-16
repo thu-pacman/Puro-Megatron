@@ -27,7 +27,6 @@ from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.transformer import TransformerConfig
 from tests.unit_tests.test_utilities import Utils
 
-
 # Skip all tests in this file for LTS versions or when emerging_optimizers is missing
 pytestmark = [
     pytest.mark.skipif(

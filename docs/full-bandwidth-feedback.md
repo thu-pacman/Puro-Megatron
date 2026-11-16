@@ -144,13 +144,8 @@ or any per-step absolute loss error above 1e-3:
 ```bash
 python tests/functional_tests/compare_puro_feedback_runs.py \
   /runs/reference /runs/candidate --start 0 --steps 24 \
-  --full-config --output /runs/acceptance/fresh
+  --full-config --attention-deterministic --output /runs/acceptance/fresh
 ```
-
-The native comparison retains the actual FP8 attention settings. Its wall
-times include input fingerprint instrumentation and should be reported as
-such. Measured migration results are recorded separately from the model
-description; a BF16-only result does not establish FP8 trajectory parity.
 
 For controlled reproducibility with the pinned Transformer Engine and
 FlashAttention versions, set `NVTE_ALLOW_NONDETERMINISTIC_ALGO=0` in both
@@ -158,4 +153,12 @@ launchers before model construction. This selects deterministic attention
 while retaining FP8 blockwise decoder computation. Report this setting
 explicitly and keep its comparisons separate from production runs that use
 `NVTE_ALLOW_NONDETERMINISTIC_ALGO=1`. Repeat the reference repository itself
-to measure the latter configuration's numerical variation.
+to measure the latter configuration's numerical variation; omit
+`--attention-deterministic` when checking that original configuration.
+The mode flag does not relax the FP8, batch, input, or per-step loss checks.
+
+Native wall times include input fingerprint instrumentation and should be
+reported as such. Measured migration results are recorded separately from
+the model description; a BF16-only result does not establish FP8 trajectory
+parity. See [migration validation](full-bandwidth-feedback-validation.md) for
+the native FP8 results, checkpoint checks, and original-attention variation.
