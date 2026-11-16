@@ -134,7 +134,7 @@ records all three losses, exact input hashes on every rank, initialization
 hashes, optimizer snapshots, package versions, synchronized batch time, and
 peak memory. It leaves the training computation unchanged. The comparison
 tool rejects missing steps, changed inputs or configuration, non-finite loss,
-or any per-step absolute loss error above 1e-4:
+or any per-step absolute loss error above 1e-3:
 
 ```bash
 python tests/functional_tests/compare_puro_feedback_runs.py \

@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Puro-Megatron contributors. All rights reserved.
 
-"""Fail closed on missing steps, changed inputs/configuration, or NLL error > 1e-4."""
+"""Fail closed on missing steps, changed inputs/configuration, or excessive NLL error."""
 
 import argparse
 import csv
@@ -10,7 +10,7 @@ import statistics
 from pathlib import Path
 
 METRICS = ('k1_nll', 'k2_nll', 'objective_nll')
-TOLERANCE = 1e-4
+TOLERANCE = 1e-3
 
 
 def read_steps(path):

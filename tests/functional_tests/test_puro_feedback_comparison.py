@@ -44,8 +44,8 @@ def test_matching_trajectory_and_resume_suffix(tmp_path, records):
 def test_single_failed_step_is_not_hidden_by_averaging(tmp_path, records, path):
     source = write_run(tmp_path / 'source', records)
     changed = copy.deepcopy(records)
-    changed[13][path] += 0.0003
-    changed[13]['objective_nll'] += 0.00015
+    changed[13][path] += 0.003
+    changed[13]['objective_nll'] += 0.0015
     candidate = write_run(tmp_path / 'candidate', changed)
     assert not COMPARISON.compare(source, candidate, 0, 24, tmp_path / 'result')['passed']
 

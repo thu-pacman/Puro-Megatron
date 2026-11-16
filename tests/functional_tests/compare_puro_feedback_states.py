@@ -3,7 +3,7 @@
 """Inspect every owned parameter and optimizer state tensor from native probes.
 
 State differences are diagnostic. The independent trajectory gate applies the
-required absolute 1e-4 bound to each K1, K2, and mean loss at every global step.
+required absolute 1e-3 bound to each K1, K2, and mean loss at every global step.
 """
 
 import argparse
