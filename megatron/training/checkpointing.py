@@ -965,7 +965,9 @@ def generate_state_dict(
 
     # Arguments, iteration, and model.
     state_dict = {}
-    state_dict['args'] = args
+    from megatron.core.models.gpt.latent_feedback import feedback_checkpoint_args
+
+    state_dict['args'] = feedback_checkpoint_args(args)
     state_dict['checkpoint_version'] = 3.0
     if iteration is not None:
         state_dict['iteration'] = iteration

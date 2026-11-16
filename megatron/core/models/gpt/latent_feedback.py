@@ -2,6 +2,7 @@
 
 """Causal, document-local feedback for the fixed two-pass GPT objective."""
 
+from copy import copy
 from typing import Optional
 
 import torch
@@ -108,6 +109,30 @@ class LatentFeedbackFusion(nn.Module):
         """Fuse the preceding token's representation without detaching its gradient."""
         previous_hidden, plain_prefix = segment_feedback_inputs(hidden, packed_seq_params)
         return self(previous_hidden, embeddings, plain_prefix)
+
+
+def feedback_checkpoint_args(args):
+    """Serialize fixed feedback semantics understood by the original training fork.
+
+    These are checkpoint compatibility fields, not additional training modes.
+    Copy the namespace so saving cannot modify live training arguments.
+    """
+    if not getattr(args, "full_bandwidth", False):
+        return args
+    saved = copy(args)
+    for name, value in {
+        "feedback_loss_weight": 1.0,
+        "feedback_jitter": 0.0,
+        "feedback_prefix_mixin": False,
+        "feedback_pass_policy": "fixed",
+        "feedback_input_scale": None,
+        "middle_layer_feedback": False,
+        "middle_layer_loop": False,
+    }.items():
+        if getattr(args, name, value) != value:
+            raise ValueError(f"Unsupported feedback checkpoint setting: {name}")
+        setattr(saved, name, value)
+    return saved
 
 
 def check_feedback_checkpoint_args(args, checkpoint_args):

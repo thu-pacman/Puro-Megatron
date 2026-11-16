@@ -54,6 +54,11 @@ The training log keeps `lm loss` as the K1 diagnostic for compatibility. Use
 `fbt objective` for the optimized mean and `feedback loss/pass1` and
 `feedback loss/pass2` for the individual paths.
 
+Training FLOPs include both passes and the feedback projections, following the
+existing convention of excluding recomputation and optimizer work. Cumulative
+FLOPs restored from older checkpoints retain their historical accounting;
+use measured batch time and input tokens when comparing such runs.
+
 This implementation supports data parallel training with TP=PP=CP=1. The
 configuration rejects unsupported combinations instead of implying they have
 been validated. FP8 additionally requires BF16 parameters, blockwise scaling,

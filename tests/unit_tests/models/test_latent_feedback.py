@@ -19,6 +19,7 @@ from megatron.core.models.gpt.gpt_model import GPTModel
 from megatron.core.models.gpt.latent_feedback import (
     LatentFeedbackFusion,
     check_feedback_checkpoint_args,
+    feedback_checkpoint_args,
     segment_feedback_inputs,
 )
 from megatron.core.packed_seq_params import PackedSeqParams
@@ -57,6 +58,25 @@ def test_batch_major_document_shift_and_gradient():
     shifted.sum().backward()
     assert hidden.grad[1, 0].count_nonzero() == 0
     assert hidden.grad[0, 0].count_nonzero() == 2
+
+
+def test_checkpoint_records_legacy_semantics_without_mutating_live_args():
+    args = SimpleNamespace(
+        full_bandwidth=True,
+        feedback_passes=2,
+        feedback_fusion="residual_glu",
+        feedback_loss_reduction="mean",
+    )
+    saved = feedback_checkpoint_args(args)
+    assert saved is not args and not hasattr(args, "feedback_loss_weight")
+    assert saved.feedback_loss_weight == 1.0
+    assert saved.feedback_jitter == 0.0
+    assert saved.feedback_prefix_mixin is False
+    assert saved.feedback_pass_policy == "fixed"
+    assert saved.feedback_input_scale is None
+    check_feedback_checkpoint_args(args, saved)
+    baseline = SimpleNamespace(full_bandwidth=False)
+    assert feedback_checkpoint_args(baseline) is baseline
 
 
 def test_sample_boundaries_remain_barriers_with_coarse_metadata():
