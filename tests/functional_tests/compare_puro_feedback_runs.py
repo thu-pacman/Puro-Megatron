@@ -30,8 +30,12 @@ def read_steps(path):
     return records
 
 
-def compare(reference, candidate, start, steps, output, full_config=False):
+def compare(
+    reference, candidate, start, steps, output, full_config=False, attention_deterministic=False
+):
     """Compare each selected global step; no averaging can hide a failed step."""
+    if attention_deterministic and not full_config:
+        raise ValueError('Deterministic attention qualification requires full configuration checks')
     left, right = read_steps(reference), read_steps(candidate)
     expected = set(range(start + 1, start + steps + 1))
     if set(right) != expected or not expected.issubset(left):
@@ -70,10 +74,9 @@ def compare(reference, candidate, start, steps, output, full_config=False):
         for key, value in required.items():
             if a['config'][key] != value:
                 raise ValueError(f'Unexpected production setting: {key}={a["config"][key]}')
-        if a['environment']['NVTE_ALLOW_NONDETERMINISTIC_ALGO'] != '1':
-            raise ValueError(
-                'The production check must retain the original attention configuration'
-            )
+        expected_attention = '0' if attention_deterministic else '1'
+        if a['environment']['NVTE_ALLOW_NONDETERMINISTIC_ALGO'] != expected_attention:
+            raise ValueError(f'Expected NVTE_ALLOW_NONDETERMINISTIC_ALGO={expected_attention}')
     rows = []
     for iteration in sorted(expected):
         a, b = left[iteration], right[iteration]
@@ -98,7 +101,9 @@ def compare(reference, candidate, start, steps, output, full_config=False):
         steps=steps,
         max_absolute_error=maximum,
         max_gradient_norm_difference=max(row['grad_norm_absolute_error'] for row in rows),
-        compared_original_fp8_configuration=full_config,
+        compared_original_fp8_configuration=full_config and not attention_deterministic,
+        native_fp8_configuration_checked=full_config,
+        attention_deterministic=attention_deterministic,
     )
     if full_config:
         result['performance'] = {}
@@ -129,9 +134,16 @@ def main():
     parser.add_argument('--steps', type=int, default=24)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--full-config', action='store_true')
+    parser.add_argument('--attention-deterministic', action='store_true')
     args = parser.parse_args()
     result = compare(
-        args.reference, args.candidate, args.start, args.steps, args.output, args.full_config
+        args.reference,
+        args.candidate,
+        args.start,
+        args.steps,
+        args.output,
+        args.full_config,
+        args.attention_deterministic,
     )
     print(json.dumps(result, indent=2))
     raise SystemExit(0 if result['passed'] else 1)

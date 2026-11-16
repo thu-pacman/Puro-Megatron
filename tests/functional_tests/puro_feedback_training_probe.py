@@ -179,6 +179,7 @@ def builder(*args, **kwargs):
         ]
         metadata = dict(
             world_size=torch.distributed.get_world_size(),
+            checkpoint_sync_enforced=SYNC_CHECKPOINT,
             config={key: str(getattr(config, key)) for key in selected},
             parameter_count=sum(parameter.numel() for parameter in model.parameters()),
             initial_parameters={
@@ -203,7 +204,6 @@ def builder(*args, **kwargs):
                     'NCCL_NET',
                     'NCCL_IB_DISABLE',
                     'NCCL_IB_HCA',
-                    'PURO_PARITY_SYNC_CHECKPOINT',
                 ]
             },
         )

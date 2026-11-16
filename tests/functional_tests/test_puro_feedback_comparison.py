@@ -65,3 +65,66 @@ def test_incomplete_or_invalid_records_fail_closed(tmp_path, records, corruption
     candidate = write_run(tmp_path / 'candidate', changed)
     with pytest.raises(ValueError):
         COMPARISON.compare(source, candidate, 0, 24, tmp_path / 'result')
+
+
+@pytest.mark.parametrize(
+    'deterministic,allow_nondeterministic,fp8,accepted',
+    [
+        (False, '1', 'e4m3', True),
+        (True, '0', 'e4m3', True),
+        (False, '0', 'e4m3', False),
+        (True, '1', 'e4m3', False),
+        (True, '0', 'bf16', False),
+    ],
+)
+def test_native_gate_checks_attention_mode_without_relaxing_fp8(
+    tmp_path, records, deterministic, allow_nondeterministic, fp8, accepted
+):
+    native = copy.deepcopy(records)
+    for row in native:
+        row.update(
+            data=[dict(rows=64, sha256='a' * 64)] * 32,
+            batch_seconds=30.0,
+            input_tokens=8388608,
+            peak_allocated_bytes=1 << 30,
+        )
+    source = write_run(tmp_path / 'source', native)
+    candidate = write_run(tmp_path / 'candidate', native)
+    manifest = dict(
+        world_size=32,
+        parameter_count=2040132608,
+        packages={},
+        environment=dict(NVTE_ALLOW_NONDETERMINISTIC_ALGO=allow_nondeterministic),
+        config=dict(
+            full_bandwidth='True',
+            feedback_passes='2',
+            feedback_loss_reduction='mean',
+            feedback_fusion='residual_glu',
+            micro_batch_size='2',
+            global_batch_size='2048',
+            seq_length='4096',
+            fp8=fp8,
+            fp8_recipe='blockwise',
+            bf16='True',
+            recompute_method='block',
+            recompute_num_layers='17',
+            output_loss_chunk_size='2048',
+            tensor_model_parallel_size='1',
+            pipeline_model_parallel_size='1',
+            context_parallel_size='1',
+            muon_momentum='0.9',
+            muon_hyperball_lr_mult='2.0',
+        ),
+    )
+    for directory in (source, candidate):
+        (directory / 'manifest.json').write_text(json.dumps(manifest))
+    if accepted:
+        result = COMPARISON.compare(
+            source, candidate, 0, 24, tmp_path / 'result', True, deterministic
+        )
+        assert result['passed'] and result['tolerance'] == 1e-3
+        assert result['native_fp8_configuration_checked']
+        assert result['attention_deterministic'] == deterministic
+    else:
+        with pytest.raises(ValueError):
+            COMPARISON.compare(source, candidate, 0, 24, tmp_path / 'result', True, deterministic)
