@@ -83,6 +83,10 @@ def build_pretraining_data_loader(dataset, consumed_samples):
         extra_kwargs = {"collate_fn": lambda x: x,}
     else:
         extra_kwargs = {}
+    # Iterator reconstruction must not advance the model's CPU RNG on resume.
+    extra_kwargs['generator'] = torch.Generator().manual_seed(
+        args.seed + mpu.get_data_parallel_rank()
+    )
     return torch.utils.data.DataLoader(
         dataset,
         batch_sampler=batch_sampler,
