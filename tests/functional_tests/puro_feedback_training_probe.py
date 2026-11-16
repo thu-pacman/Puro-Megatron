@@ -25,6 +25,7 @@ from megatron.training import get_args
 
 OUTPUT = Path(os.environ['PURO_PARITY_DIR'])
 END = int(os.environ['PURO_PARITY_END'])
+SYNC_CHECKPOINT = os.environ.get('PURO_PARITY_SYNC_CHECKPOINT', '0') == '1'
 INPUT_HASH = hashlib.sha256()
 INPUT_ROWS = 0
 FIRST_STEP = True
@@ -202,6 +203,7 @@ def builder(*args, **kwargs):
                     'NCCL_NET',
                     'NCCL_IB_DISABLE',
                     'NCCL_IB_HCA',
+                    'PURO_PARITY_SYNC_CHECKPOINT',
                 ]
             },
         )
@@ -211,6 +213,30 @@ def builder(*args, **kwargs):
 
 original_step = training.train_step
 step_signature = inspect.signature(original_step)
+
+original_save = training.save_checkpoint_and_time
+save_signature = inspect.signature(original_save)
+
+
+@wraps(original_save)
+def save_checkpoint(*args, **kwargs):
+    """Optionally align short reference saves with its production validation saves.
+
+    The research fork's layer-wise optimizer guard omits the mandatory parameter
+    all-gather before standalone saves. Its normal validation immediately before
+    production checkpoints happens to synchronize the model. Record this opt-in
+    workaround for isolated short-run checkpoints; do not change training math.
+    """
+    config = get_args()
+    if (
+        SYNC_CHECKPOINT
+        and config.use_layer_wise_distributed_optimizer
+        and config.overlap_param_gather
+        and not training.should_disable_forward_pre_hook(config)
+    ):
+        bound = save_signature.bind(*args, **kwargs)
+        training.force_param_sync(bound.arguments['model'])
+    return original_save(*args, **kwargs)
 
 
 @wraps(original_step)
@@ -268,6 +294,7 @@ def step(*args, **kwargs):
 
 gpt_builders.gpt_builder = builder
 training.train_step = step
+training.save_checkpoint_and_time = save_checkpoint
 
 # Import the entrypoint once, then invoke the same native setup as its __main__.
 import pretrain_gpt as entry
