@@ -46,9 +46,15 @@ In Python, `GPTModel.forward(..., feedback_passes=1)` provides the ordinary
 single-pass path during evaluation. With labels, the default is two passes;
 `feedback_passes=2` returns the mean token loss. Without labels, the default is
 one pass; explicitly selecting two passes returns the final-pass logits.
-Two-pass incremental inference with a KV cache is rejected. Training requires
-two passes so that parameters and the objective cannot silently change between
-batches.
+The native Megatron model rejects two-pass incremental inference with a KV
+cache. Training requires two passes so that parameters and the objective
+cannot silently change between batches.
+
+For portable HF checkpoints and generation, use the separate
+[Transformers adapter](../examples/puro/hf_feedback/README.md). It provides a
+`puro_feedback` AutoModel, a shared decoder with independent K1/K2 KV caches,
+and standalone packaging, generation, and verification scripts. It loads the
+BF16 weights without the Megatron or Transformer Engine training runtime.
 
 The training log keeps `lm loss` as the K1 diagnostic for compatibility. Use
 `fbt objective` for the optimized mean and `feedback loss/pass1` and
